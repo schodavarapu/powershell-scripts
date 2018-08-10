@@ -1,0 +1,101 @@
+  $servers='xxxxx', 'xxxxxx','xxxxxx'
+$servers |
+     ForEach-Object{
+          Write-Host "Polling server $_" -fore green
+          get-service winmgmt* -ComputerName $_ 
+
+     } | 
+     format-table Machinename, Name, Status -autosize  
+
+
+
+
+
+
+<#
+[CmdletBinding(ConfirmImpact='Low')] 
+Param([Parameter(Position=0,ValueFromPipeline=$true,ValueFromPipelineByPropertyName=$true)]
+    [String[]]$ComputerName = $env:COMPUTERNAME)
+
+    #>
+
+    Set-Location "C:\temp"
+
+    [String[]]$ComputerName = Get-Content "C:\temp\COMPUTERNAME.csv"
+    
+    read-host -assecurestring | convertfrom-securestring | out-file C:\temp\cred.txt
+    $password = get-content C:\temp\cred.txt | convertto-securestring
+    $credential = new-object -typename System.Management.Automation.PSCredential -argumentlist "username",$password
+    # $credential = Get-Credential
+
+$PCData = foreach ($PC in $ComputerName) {
+    Write-Host "foreach  - '$PC'"
+   
+    try {
+        Test-Connection -ComputerName $PC -Count 2 -ErrorAction Stop | Out-Null
+        Write-Host "Checking computer'$PC'"
+        $OS    = Get-WmiObject -ComputerName $PC -Class Win32_OperatingSystem -Credential $credential -EA 0
+        $Mfg   = Get-WmiObject -ComputerName $PC -Class Win32_ComputerSystem -Credential $credential -EA 0
+        $IPs   = @()
+        $MACs  = @()
+        foreach ($IPAddress in ((Get-WmiObject -ComputerName $PC -Class "Win32_NetworkAdapterConfiguration" -Credential $credential -EA 0 | 
+            Where { $_.IpEnabled -Match "True" }).IPAddress | where { $_ -match "\." })) {
+                $IPs  += $IPAddress
+                $MACs += (Get-WmiObject -ComputerName $PC -Class "Win32_NetworkAdapterConfiguration" -Credential $credential -EA 0 | 
+                    Where { $_.IPAddress -eq $IPAddress }).MACAddress
+        }
+        $Props = @{
+            ComputerName   = $PC
+            Status         = 'Online'
+            IPAddress      = $IPs -join ', '
+            MACAddress     = $MACs -join ', '
+#            DateBuilt      = ([WMI]'').ConvertToDateTime($OS.InstallDate)
+            OSVersion      = $OS.Version
+            OSCaption      = $OS.Caption
+            OSArchitecture = $OS.OSArchitecture
+            Model          = $Mfg.model
+            Manufacturer   = $Mfg.Manufacturer
+            VM             = $(if ($Mfg.Manufacturer -match 'vmware' -or $Mfg.Manufacturer -match 'microsoft') { $true } else { $false })
+            #LastBootTime   = ([WMI]'').ConvertToDateTime($OS.LastBootUpTime)
+        }
+        New-Object -TypeName PSObject -Property $Props
+        #$Props
+    } catch { # either ping failed or access denied 
+        try {
+            Test-Connection -ComputerName $PC -Count 2 -ErrorAction Stop | Out-Null
+            $Props = @{
+                ComputerName   = $PC
+                Status         = $(if ($Error[0].Exception -match 'Access is denied') { 'Access is denied' } else { $Error[0].Exception })
+                IPAddress      = ''
+                MACAddress     = ''
+                DateBuilt      = ''
+                OSVersion      = ''
+                OSCaption      = ''
+                OSArchitecture = ''
+                Model          = ''
+                Manufacturer   = ''
+                VM             = ''
+                LastBootTime   = ''
+            }
+            New-Object -TypeName PSObject -Property $Props            
+        } catch {
+            $Props = @{
+                ComputerName   = $PC
+                Status         = 'No response to ping'
+                IPAddress      = ''
+                MACAddress     = ''
+                DateBuilt      = ''
+                OSVersion      = ''
+                OSCaption      = ''
+                OSArchitecture = ''
+                Model          = ''
+                Manufacturer   = ''
+                VM             = ''
+                LastBootTime   = ''
+            }
+            New-Object -TypeName PSObject -Property $Props              
+        }
+    }
+}
+$PCData | sort ComputerName |
+    select ComputerName, Status, OSVersion, OSCaption, OSArchitecture, IPAddress, MacAddress, VM, Model, Manufacturer, DateBuilt, LastBootTime | Out-File "C:\temp\result_$(get-date -f yyyy-MM-dd).txt"
